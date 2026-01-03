@@ -5,4 +5,9 @@ const DATABASE = {
   name: process.env.DB_NAME || "courtsidebites"
 };
 
-module.exports = { PORT, DATABASE };
+const AUTH = {
+  secret: process.env.JWT_SECRET,
+  expiresIn: process.env.JWT_EXPIRES_IN || "7d"
+};
+
+module.exports = { PORT, DATABASE, AUTH };

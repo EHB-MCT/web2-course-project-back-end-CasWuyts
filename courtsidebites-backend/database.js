@@ -1,29 +1,24 @@
 const { MongoClient } = require("mongodb");
 const { DATABASE } = require("./settings");
 
-let activeDb;
+let db;
 
 async function openDatabase() {
-  if (activeDb) return activeDb;
-
-  if (!DATABASE.uri) {
-    throw new Error("No MongoDB connection string found");
-  }
+  if (db) return db;
+  if (!DATABASE.uri) throw new Error("Mongo URI missing");
 
   const client = new MongoClient(DATABASE.uri);
   await client.connect();
 
-  activeDb = client.db(DATABASE.name);
-  console.log(`MongoDB ready (${activeDb.databaseName})`);
+  db = client.db(DATABASE.name);
+  console.log(`MongoDB connected (${db.databaseName})`);
 
-  return activeDb;
+  return db;
 }
 
-function database() {
-  if (!activeDb) {
-    throw new Error("Database not initialized");
-  }
-  return activeDb;
+function getDatabase() {
+  if (!db) throw new Error("Database not initialized");
+  return db;
 }
 
-module.exports = { openDatabase, database };
+module.exports = { openDatabase, getDatabase };
