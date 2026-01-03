@@ -13,7 +13,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+
+
+
 /* auth helpers  */
+
 
 function createToken(payload) {
   return jwt.sign(payload, AUTH.secret, { expiresIn: AUTH.expiresIn });
@@ -32,6 +36,20 @@ function requireAuth(req, res, next) {
   } catch {
     res.status(401).json({ message: "Invalid token" });
   }
+}
+
+function toObjectId(id) {
+  try {
+    return new ObjectId(String(id));
+  } catch {
+    return null;
+  }
+}
+
+function clampInt(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return null;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
 }
 
 
@@ -94,6 +112,99 @@ app.get("/courts/:id/snacks", async (req, res) => {
     res.status(400).json({ message: "Invalid court id" });
   }
 });
+
+
+app.get("/courts/:id/ratings", async (req, res) => {
+  try {
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ message: "Invalid court id" });
+
+    const db = getDatabase();
+    const court = await db.collection("courts").findOne(
+      { _id: id },
+      { projection: { ratings: 1, averageRating: 1, name: 1 } }
+    );
+
+    if (!court) return res.status(404).json({ message: "Court not found" });
+
+    res.json({
+      courtId: court._id,
+      name: court.name,
+      averageRating: court.averageRating || 0,
+      ratings: court.ratings || []
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+app.post("/courts/:id/ratings", requireAuth, async (req, res) => {
+  try {
+    const courtId = toObjectId(req.params.id);
+    if (!courtId) return res.status(400).json({ message: "Invalid court id" });
+
+    const score = clampInt(req.body.score, 1, 5);
+    const comment = typeof req.body.comment === "string" ? req.body.comment.trim() : "";
+
+    if (!score) return res.status(400).json({ message: "Score must be 1-5" });
+
+    const db = getDatabase();
+
+
+    const court = await db.collection("courts").findOne({ _id: courtId });
+    if (!court) return res.status(404).json({ message: "Court not found" });
+
+    const userId = toObjectId(req.user.id) || req.user.id; 
+
+   
+    const existing = (court.ratings || []).find(r => String(r.userId) === String(userId));
+
+    let newRatings;
+    if (existing) {
+    
+      newRatings = (court.ratings || []).map(r =>
+        String(r.userId) === String(userId)
+          ? { ...r, score, comment, updatedAt: new Date() }
+          : r
+      );
+    } else {
+      
+      newRatings = [
+        ...(court.ratings || []),
+        { userId, score, comment, createdAt: new Date() }
+      ];
+    }
+
+ 
+    const avg =
+      newRatings.reduce((sum, r) => sum + Number(r.score || 0), 0) / (newRatings.length || 1);
+
+    await db.collection("courts").updateOne(
+      { _id: courtId },
+      {
+        $set: {
+          ratings: newRatings,
+          averageRating: Math.round(avg * 10) / 10
+        }
+      }
+    );
+
+    res.status(201).json({
+      message: existing ? "Rating updated" : "Rating added",
+      averageRating: Math.round(avg * 10) / 10,
+      totalRatings: newRatings.length
+    });
+  } catch (err) {
+  console.error("POST /courts/:id/ratings error:", err);
+  res.status(500).json({
+    message: "Server error",
+    error: err.message,
+    stack: err.stack
+  });
+  }
+});
+
 
 /*  auth  */
 
@@ -220,12 +331,103 @@ app.post("/games/:id/leave", requireAuth, async (req, res) => {
   }
 });
 
+
+app.get("/users/me/saved", requireAuth, async (req, res) => {
+  try {
+    const db = getDatabase();
+    const userId = toObjectId(req.user.id) || req.user.id;
+
+    const user = await db.collection("users").findOne(
+      { _id: userId },
+      { projection: { savedCourts: 1 } }
+    );
+
+    const saved = user?.savedCourts || [];
+    res.json({ savedCourts: saved });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+app.post("/users/me/saved/:courtId", requireAuth, async (req, res) => {
+  try {
+    const db = getDatabase();
+    const userId = toObjectId(req.user.id) || req.user.id;
+
+    const courtId = toObjectId(req.params.courtId);
+    if (!courtId) return res.status(400).json({ message: "Invalid court id" });
+
+
+    const exists = await db.collection("courts").findOne({ _id: courtId }, { projection: { _id: 1 } });
+    if (!exists) return res.status(404).json({ message: "Court not found" });
+
+    await db.collection("users").updateOne(
+      { _id: userId },
+      { $addToSet: { savedCourts: courtId } }
+    );
+
+    res.status(201).json({ message: "Court saved" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+app.delete("/users/me/saved/:courtId", requireAuth, async (req, res) => {
+  try {
+    const db = getDatabase();
+    const userId = toObjectId(req.user.id) || req.user.id;
+
+    const courtId = toObjectId(req.params.courtId);
+    if (!courtId) return res.status(400).json({ message: "Invalid court id" });
+
+    await db.collection("users").updateOne(
+      { _id: userId },
+      { $pull: { savedCourts: courtId } }
+    );
+
+    res.json({ message: "Court removed" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+app.get("/courts/:id/games", async (req, res) => {
+  try {
+    const courtId = toObjectId(req.params.id);
+    if (!courtId) return res.status(400).json({ message: "Invalid court id" });
+
+    const db = getDatabase();
+
+    const court = await db.collection("courts").findOne({ _id: courtId }, { projection: { name: 1 } });
+    if (!court) return res.status(404).json({ message: "Court not found" });
+
+    const games = await db
+      .collection("games")
+      .find({
+        $or: [
+          { courtId: courtId },
+          { courtName: court.name }
+        ]
+      })
+      .sort({ dateTimeStart: 1 })
+      .toArray();
+
+    res.json(games);
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 /*  start server */
 
 openDatabase()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+      console.log(`Server running on`);
     });
   })
   .catch((err) => {
